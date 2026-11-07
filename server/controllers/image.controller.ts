@@ -6,8 +6,9 @@ export async function recipeImageHandler(req: Request, res: Response): Promise<v
   const request = parseRecipeImageQuery(req.query);
   const image = await getRecipeImage(request);
 
-  // The URL is content-addressed (prompt + seed), so the browser may cache it forever.
-  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  // The URL is signed and content-addressed (prompt + seed), so browsers and CDNs may cache it forever.
+  // s-maxage lets Vercel's edge cache serve repeat views, since a function's disk cache does not last.
+  res.setHeader('Cache-Control', 'public, max-age=31536000, s-maxage=31536000, immutable');
   res.setHeader('Content-Type', image.contentType);
   res.setHeader('Content-Length', String(image.data.length));
   res.end(image.data);

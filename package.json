@@ -13,6 +13,7 @@
     "dev:web": "vite",
     "dev:api": "node --watch --env-file-if-exists=.env server/index.ts",
     "build": "tsc -b && vite build",
+    "build:vercel": "npm run build && node server/scripts/build-vercel.ts",
     "start": "node --env-file-if-exists=.env server/index.ts",
     "preview": "npm run build && npm start",
     "typecheck": "tsc -b --noEmit",

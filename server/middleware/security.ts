@@ -1,15 +1,12 @@
 import type { RequestHandler } from 'express';
 import { env } from '../config/env.ts';
+import { HSTS_HEADER, SECURITY_HEADERS } from '../http/securityPolicy.ts';
 import { HttpError } from '../utils/httpError.ts';
 
 /** Baseline security headers for every response. */
 export const securityHeaders: RequestHandler = (req, res, next) => {
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=(), payment=()');
-  if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
+  if (req.secure) res.setHeader('Strict-Transport-Security', HSTS_HEADER);
   next();
 };
 

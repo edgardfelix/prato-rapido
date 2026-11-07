@@ -16,8 +16,8 @@ export function createApp(): Express {
   // Bodies are parsed per route (Content-Type check + size limit), after the cheap guards.
   app.use('/api', requestLogger, originGuard, noStore, createApiRouter());
 
-  const servesClient = serveClientApp(app);
-  if (!servesClient) {
+  // On Vercel the CDN serves dist/ (same headers, see server/scripts/build-vercel.ts): the function only answers /api.
+  if (!env.serverless && !serveClientApp(app)) {
     // Development: Vite serves the UI on :5173 and proxies /api here.
     app.get('/', (_req, res) => {
       res
@@ -29,3 +29,8 @@ export function createApp(): Express {
   app.use(errorHandler);
   return app;
 }
+
+/** The app instance: server/index.ts listens with it, and on Vercel it is the function's request handler. */
+const app = createApp();
+
+export default app;

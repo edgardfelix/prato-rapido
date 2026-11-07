@@ -1,33 +1,8 @@
-import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import express, { type Express } from 'express';
 import { env } from '../config/env.ts';
-
-/** Strict CSP for the built SPA. Inline scripts in index.html are allowed by hash. */
-function buildContentSecurityPolicy(html: string): string {
-  const inlineScriptHashes = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)].map(
-    (match) => `'sha256-${createHash('sha256').update(match[1] ?? '').digest('base64')}'`,
-  );
-
-  return [
-    "default-src 'self'",
-    ["script-src 'self'", ...inlineScriptHashes].join(' '),
-    // styled-components injects <style> tags at runtime.
-    "style-src 'self' 'unsafe-inline'",
-    // Food photos are proxied by /api/recipe-image, so no third-party image host is needed.
-    "img-src 'self' data: blob:",
-    // Vite inlines tiny font subsets as data: URLs.
-    "font-src 'self' data:",
-    "connect-src 'self'",
-    "media-src 'self' blob: data:",
-    "manifest-src 'self'",
-    "object-src 'none'",
-    "base-uri 'self'",
-    "form-action 'self'",
-    "frame-ancestors 'none'",
-  ].join('; ');
-}
+import { buildContentSecurityPolicy } from './securityPolicy.ts';
 
 /**
  * Serves the production build (`dist/`) with long-lived caching for hashed

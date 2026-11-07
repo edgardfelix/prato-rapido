@@ -1,12 +1,22 @@
 import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 /*
  * Typed, validated runtime configuration. Values come from process.env,
- * which Node loads from ".env" through the --env-file-if-exists flag.
+ * which Node loads from ".env" through the --env-file-if-exists flag
+ * (on Vercel, from the project's Environment Variables).
  */
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, '..', '..');
+
+/**
+ * Running as a Vercel Function. Vercel sets VERCEL=1, and the Vercel bundle
+ * (server/scripts/build-vercel.ts) hard-codes it. There the CDN serves the
+ * front-end, requests arrive through Vercel's proxy and only the temp folder
+ * is writable.
+ */
+const SERVERLESS = Boolean(process.env.VERCEL);
 
 const THINKING_LEVELS = ['minimal', 'low', 'medium', 'high'] as const;
 export type ThinkingLevelName = (typeof THINKING_LEVELS)[number];
@@ -139,7 +149,10 @@ const imageSigningSecret =
 export const env = Object.freeze({
   port: readInt('PORT', 3001, 1, 65_535),
   isProduction: process.env.NODE_ENV === 'production',
-  trustProxy: readBoolean('TRUST_PROXY', false),
+  /** Vercel Function: no listen(), no static files, temp-only disk. */
+  serverless: SERVERLESS,
+  /** On Vercel the client IP comes from its proxy (X-Forwarded-For), so it is trusted by default there. */
+  trustProxy: readBoolean('TRUST_PROXY', SERVERLESS),
   allowedOrigins: readString('ALLOWED_ORIGINS')
     .split(',')
     .map((origin) => origin.trim().replace(/\/+$/, ''))
@@ -163,6 +176,7 @@ export const env = Object.freeze({
   paths: Object.freeze({
     root: PROJECT_ROOT,
     dist: path.join(PROJECT_ROOT, 'dist'),
-    imageCache: path.join(PROJECT_ROOT, '.cache', 'images'),
+    // A Vercel Function can only write to the temp folder (one per instance, lost on cold starts).
+    imageCache: SERVERLESS ? path.join(tmpdir(), 'prato-rapido', 'images') : path.join(PROJECT_ROOT, '.cache', 'images'),
   }),
 });

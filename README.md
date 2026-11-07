@@ -55,6 +55,7 @@ Assistente culinário **mobile-first** que cria receitas de **10 a 15 minutos** 
 | `npm run dev` | Vite (5173) + API com hot reload (3001). O Vite faz proxy de `/api`. |
 | `npm run dev:lan` | Igual ao anterior, expondo o Vite na rede local (para abrir no celular). |
 | `npm run build` | Checagem de tipos (app, config e servidor) + build de produção em `dist/`. |
+| `npm run build:vercel` | `build` + saída da Vercel em `.vercel/output` (front na CDN + API como Vercel Function). É o comando que a Vercel roda. |
 | `npm start` | Servidor de produção: API + app compilado na mesma origem (porta `PORT`). |
 | `npm run preview` | `build` + `start`. |
 | `npm run typecheck` | Só a checagem de tipos. |
@@ -73,7 +74,7 @@ Assistente culinário **mobile-first** que cria receitas de **10 a 15 minutos** 
 ```
 prato-rapido/
 ├─ server/                      # API Express (TypeScript executado direto pelo Node)
-│  ├─ index.ts                  # bootstrap, logs e encerramento gracioso
+│  ├─ index.ts                  # exporta o app (export default); listen() só fora da Vercel, logs e encerramento gracioso
 │  ├─ app.ts                    # fábrica do app: middlewares, rotas, front-end compilado
 │  ├─ config/                   # env tipado e limites
 │  ├─ controllers/              # adaptadores HTTP finos (validar → caso de uso → JSON)
@@ -82,9 +83,10 @@ prato-rapido/
 │  ├─ services/                 # Gemini, receitas, demo, verificação humana, proxy/cache de imagens e paywall:
 │  │                            #   upstash (REST), buyers (lista de compradores), access (token), cakto (webhook)
 │  ├─ scripts/buyers.ts         # CLI de suporte: libera, remove ou confere um comprador
+│  ├─ scripts/build-vercel.ts   # gera .vercel/output (CDN + Vercel Function + rotas e cabeçalhos)
 │  ├─ validation/               # validação estrita do payload e e-mail, sanitização da resposta da IA
 │  ├─ middleware/               # segurança, CORS/origem, rate limit, token de acesso e humano, JSON/limites, erros
-│  └─ http/clientApp.ts         # serve dist/ com CSP (hash do script inline) e fallback SPA
+│  └─ http/                     # clientApp: serve dist/ e fallback SPA; securityPolicy: cabeçalhos e CSP (hash do script inline)
 ├─ src/
 │  ├─ @types/                   # contratos: User, UserAIContext, QuizData, JourneyState, Tip, RecipeResponse, APIPayload…
 │  ├─ components/
@@ -325,7 +327,28 @@ Sem chave, a fila é compartilhada por todos os usuários do servidor (uma foto 
 
 ## Deploy
 
-O `npm start` sobe API + front-end na mesma origem, então qualquer host Node serve (Render, Railway, Fly.io, VPS):
+### Vercel
+
+O `vercel.json` manda a Vercel rodar `npm run build:vercel`, que gera a saída pronta no formato [Build Output API](https://vercel.com/docs/build-output-api) (`.vercel/output`):
+
+- **Front-end** (`dist/`) servido pela CDN, com os mesmos cabeçalhos de segurança e a mesma CSP que o Express envia localmente. Rotas do app (`/profile`, `/receita/:id`…) caem no `index.html`.
+- **API**: `/api/*` vai para uma Vercel Function (Node 24) que exporta o app Express (`export default app`). O Express recebe o caminho original e roteia como no servidor local. O código do servidor é empacotado em um único arquivo JavaScript no build, então a Vercel não compila TypeScript: o compilador dela usa a API JavaScript do TypeScript, que o TypeScript 7 não tem mais.
+- Na Vercel o `listen()` não roda (a Vercel chama o app a cada requisição), o proxy da Vercel é confiável por padrão (`TRUST_PROXY` não é necessário) e o cache de fotos usa a pasta temporária.
+
+**Variáveis** (Settings → Environment Variables, depois faça um redeploy): `GEMINI_API_KEY`, `IMAGE_SIGNING_SECRET` (recomendado), `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, `CAKTO_WEBHOOK_SECRET`, `CAKTO_CHECKOUT_URL` e, se quiser, `POLLINATIONS_API_KEY`.
+
+**Webhook da Cakto**: use o domínio de produção, `https://<seu-projeto>.vercel.app/api/webhook/cakto`. Deploys de preview podem estar protegidos por login da Vercel e recusar a Cakto.
+
+Limites da Vercel que valem para este app:
+
+- Corpo da requisição até **4,5 MB**. As fotos já são comprimidas no aparelho (~80–300 KB) e 45 s de áudio dão ~2 MB.
+- Rate limit e lista de desafios usados ficam em memória, **por instância**. Com várias instâncias, o limite efetivo por IP fica maior.
+- O cache de fotos em disco some quando a instância é trocada, mas a CDN da Vercel guarda cada foto (`s-maxage`). Sem `POLLINATIONS_API_KEY`, o limite gratuito do Pollinations é por IP, e os IPs de saída da Vercel são compartilhados: use a chave em produção.
+- Duração máxima de 300 s por requisição (Fluid compute, ligado no `vercel.json`).
+
+### Outros hosts Node (Render, Railway, Fly.io, VPS)
+
+O `npm start` sobe API + front-end na mesma origem:
 
 - **Build**: `npm install && npm run build`
 - **Start**: `npm start`

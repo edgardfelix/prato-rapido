@@ -15,6 +15,9 @@ dist-ssr
 # Generated food photos cached by the API
 .cache
 
+# Vercel: build output (npm run build:vercel) and local project link
+.vercel
+
 # Environment (never commit real keys)
 .env
 .env.*
