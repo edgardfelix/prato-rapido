@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="pt-BR" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="description" content="Prato Rápido: receitas de 10 a 15 minutos com o que você tem em casa. Digite, fotografe ou fale seus ingredientes." />
+    <meta name="theme-color" content="#0F1115" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Prato Rápido" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <title>Prato Rápido</title>
+    <!-- Paints the right background before the app loads (no theme flash). -->
+    <style>
+      html { background: #0f1115; color-scheme: dark; }
+      html:where([data-theme='light']) { background: #f8fafc; color-scheme: light; }
+    </style>
+    <script>
+      (function () {
+        try {
+          var mode = JSON.parse(localStorage.getItem('prato-rapido:theme'));
+          if (mode === 'light' || mode === 'dark') {
+            document.documentElement.setAttribute('data-theme', mode);
+            document.querySelector('meta[name="theme-color"]').setAttribute('content', mode === 'light' ? '#F8FAFC' : '#0F1115');
+          }
+        } catch (error) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <noscript>O Prato Rápido precisa do JavaScript ativado para funcionar.</noscript>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

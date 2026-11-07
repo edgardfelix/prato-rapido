@@ -1,0 +1,22 @@
+/** Client-side limits. The server enforces its own (stricter or equal) rules. */
+export const LIMITS = {
+  ingredientsMaxChars: 1500,
+  ingredientsMinChars: 2,
+  recordingMaxMs: 45_000,
+  recordingMinMs: 800,
+  imageMaxDimension: 1280,
+  imageQuality: 0.82,
+  imageSourceMaxBytes: 15 * 1024 * 1024,
+  historySize: 12,
+  recentOnHome: 4,
+  userMinAge: 8,
+  userMaxAge: 110,
+  dislikedMaxItems: 15,
+  dislikedMaxChars: 40,
+  avoidRecipesMax: 5,
+  avoidRecipeMaxChars: 120,
+  profileNameMaxChars: 60,
+  profileEmailMaxChars: 120,
+  avatarMaxDimension: 256,
+  avatarMaxDataUrlChars: 300_000,
+} as const;

@@ -1,0 +1,44 @@
+{
+  "name": "prato-rapido",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Prato Rápido: assistente culinário mobile-first que cria receitas de 10-15 minutos com IA (Gemini) a partir de texto, foto ou voz.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n web,api -c cyan,magenta \"vite\" \"node --watch --env-file-if-exists=.env server/index.ts\"",
+    "dev:lan": "concurrently -k -n web,api -c cyan,magenta \"vite --host\" \"node --watch --env-file-if-exists=.env server/index.ts\"",
+    "dev:web": "vite",
+    "dev:api": "node --watch --env-file-if-exists=.env server/index.ts",
+    "build": "tsc -b && vite build",
+    "start": "node --env-file-if-exists=.env server/index.ts",
+    "preview": "npm run build && npm start",
+    "typecheck": "tsc -b --noEmit",
+    "lint": "oxlint",
+    "buyers": "node --env-file-if-exists=.env server/scripts/buyers.ts"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/plus-jakarta-sans": "^5.3.0",
+    "@google/genai": "^3.0.0",
+    "express": "^5.3.0",
+    "lucide-react": "^1.70.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-router": "^8.5.1",
+    "styled-components": "^6.6.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "concurrently": "^10.0.6",
+    "oxlint": "^1.90.0",
+    "typescript": "~7.0.2",
+    "vite": "^8.3.6"
+  }
+}
