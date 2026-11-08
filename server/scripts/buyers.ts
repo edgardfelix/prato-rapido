@@ -7,7 +7,7 @@
  *   npm run buyers -- check comprador@email.com
  */
 import { env } from '../config/env.ts';
-import { addAuthorizedEmail, isEmailAuthorized, MANUAL_ORDER, removeAuthorizedEmail } from '../services/buyers.service.ts';
+import { addAuthorizedEmail, findAccessSource, MANUAL_ORDER, removeAuthorizedEmail } from '../services/buyers.service.ts';
 import { parseEmail } from '../validation/email.ts';
 
 const USAGE = 'Uso: npm run buyers -- <add|remove|check> <email>';
@@ -31,8 +31,17 @@ async function main(): Promise<number> {
     await removeAuthorizedEmail(email);
     console.log(`✔ ${email} foi removido da base de compradores.`);
   } else {
-    const authorized = await isEmailAuthorized(email);
-    console.log(`${email}: ${authorized ? 'comprador autorizado' : 'não encontrado na base de compradores'}`);
+    const source = await findAccessSource(email);
+    const verdict =
+      source === 'landing-page'
+        ? 'comprador autorizado (compra registrada pela landing page)'
+        : source === 'buyer-list'
+          ? 'comprador autorizado (lista do app)'
+          : 'não encontrado na base de compradores';
+    console.log(`${email}: ${verdict}`);
+    if (!source && !env.paywall.landingGrants) {
+      console.log('Obs.: sem LP_ACCESS_TOKEN_SECRET, as compras registradas pela landing page não são consultadas.');
+    }
   }
   return 0;
 }

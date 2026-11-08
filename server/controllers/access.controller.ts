@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import type { AccessStatusResponse, VerifyEmailResponse } from '../../src/@types/access.ts';
 import { env } from '../config/env.ts';
 import { issueAccessToken } from '../services/access.service.ts';
-import { isEmailAuthorized } from '../services/buyers.service.ts';
+import { findAccessSource, type AccessSource } from '../services/buyers.service.ts';
 import { UpstashError } from '../services/upstash.service.ts';
 import { HttpError } from '../utils/httpError.ts';
 import { maskEmail } from '../validation/email.ts';
@@ -22,9 +22,9 @@ export async function verifyEmailHandler(req: Request, res: Response): Promise<v
   if (!env.paywall.enabled) throw new HttpError(503, 'NOT_CONFIGURED', 'O acesso pago não está ativo neste servidor.');
   const { email } = validateVerifyEmailPayload(req.body);
 
-  let authorized: boolean;
+  let source: AccessSource | null;
   try {
-    authorized = await isEmailAuthorized(email);
+    source = await findAccessSource(email);
   } catch (error) {
     if (!(error instanceof UpstashError)) throw error;
     throw new HttpError(503, 'ACCESS_UNAVAILABLE', 'Não foi possível conferir sua compra agora. Tente de novo em instantes.', {
@@ -32,14 +32,14 @@ export async function verifyEmailHandler(req: Request, res: Response): Promise<v
     });
   }
 
-  if (!authorized) {
+  if (!source) {
     const body: VerifyEmailResponse = { success: false, message: BUYER_NOT_FOUND_MESSAGE };
     res.status(200).json(body);
     return;
   }
 
   const { token, expiresAt } = issueAccessToken(email);
-  console.log(`[paywall] Access activated for ${maskEmail(email)}.`);
+  console.log(`[paywall] Access activated for ${maskEmail(email)} (${source === 'landing-page' ? 'landing page grant' : 'buyer list'}).`);
   const body: VerifyEmailResponse = { success: true, accessToken: token, expiresAt };
   res.status(200).json(body);
 }

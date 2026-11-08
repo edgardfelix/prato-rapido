@@ -90,9 +90,22 @@ export interface PaywallConfig {
   productIds: readonly string[];
   priceLabel: string;
   tokenTtlDays: number;
+  /**
+   * Purchases recorded by the landing page (lp-pratorapido): Cakto calls its
+   * webhook, which writes `{prefix}grant:{hmac of the e-mail}` to the same
+   * Upstash database. The key is derived from the landing page's
+   * ACCESS_TOKEN_SECRET, so this app needs the same value. Null when missing.
+   */
+  landingGrants: Readonly<{ secret: string; prefix: string }> | null;
   /** Misconfigurations, logged at startup. */
   warnings: readonly string[];
 }
+
+/** REDIS_PREFIX default of lp-pratorapido, and the pattern it accepts. */
+export const DEFAULT_LANDING_PREFIX = 'pratorapido:lp:';
+const LANDING_PREFIX_PATTERN = /^[\w:.-]{1,64}$/;
+/** lp-pratorapido refuses an ACCESS_TOKEN_SECRET shorter than this in production. */
+const LANDING_SECRET_MIN_CHARS = 32;
 
 /** Upstash REST URL: https, or plain http on loopback for local emulators (e.g. serverless-redis-http). */
 function readUpstashUrl(): string {
@@ -115,13 +128,26 @@ function readPaywallConfig(): PaywallConfig {
   const webhookSecret = readString('CAKTO_WEBHOOK_SECRET');
   const rawCheckoutUrl = readString('CAKTO_CHECKOUT_URL');
   const checkoutUrl = readHttpsUrl('CAKTO_CHECKOUT_URL') || null;
+  const landingSecret = readString('LP_ACCESS_TOKEN_SECRET');
+  const rawLandingPrefix = readString('LP_REDIS_PREFIX', DEFAULT_LANDING_PREFIX);
+  const landingPrefix = LANDING_PREFIX_PATTERN.test(rawLandingPrefix) ? rawLandingPrefix : DEFAULT_LANDING_PREFIX;
+  const landingGrants =
+    landingSecret.length >= LANDING_SECRET_MIN_CHARS ? Object.freeze({ secret: landingSecret, prefix: landingPrefix }) : null;
 
   const warnings: string[] = [];
   if (rawUrl && !url) warnings.push('UPSTASH_REDIS_REST_URL must be the https "REST URL" of the database (https://<name>.upstash.io).');
   if (Boolean(rawUrl) !== Boolean(token)) warnings.push('Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN together.');
+  if (rawLandingPrefix !== landingPrefix) warnings.push(`LP_REDIS_PREFIX is invalid; using "${DEFAULT_LANDING_PREFIX}".`);
   if (enabled) {
     if (!upstash) warnings.push('PAYWALL_ENABLED=true without Upstash credentials: nobody can activate access.');
-    if (!webhookSecret) warnings.push('CAKTO_WEBHOOK_SECRET is empty: the Cakto webhook refuses every delivery, so new buyers are not registered.');
+    if (landingSecret && !landingGrants) {
+      warnings.push(`LP_ACCESS_TOKEN_SECRET is too short: use the ACCESS_TOKEN_SECRET of lp-pratorapido (${LANDING_SECRET_MIN_CHARS}+ characters).`);
+    } else if (!landingGrants) {
+      warnings.push('LP_ACCESS_TOKEN_SECRET is not set: buyers registered by the landing page (lp-pratorapido) cannot activate the app.');
+    }
+    if (!webhookSecret && !landingGrants) {
+      warnings.push('CAKTO_WEBHOOK_SECRET is empty: the Cakto webhook refuses every delivery, so new buyers are not registered.');
+    }
     if (!checkoutUrl) {
       warnings.push(rawCheckoutUrl ? 'CAKTO_CHECKOUT_URL must be an https URL.' : 'CAKTO_CHECKOUT_URL is empty: the "Comprar Acesso" button stays hidden.');
     }
@@ -135,6 +161,7 @@ function readPaywallConfig(): PaywallConfig {
     productIds: Object.freeze(readList('CAKTO_PRODUCT_IDS')),
     priceLabel: readString('ACCESS_PRICE_LABEL', 'R$ 21,90').slice(0, 40),
     tokenTtlDays: readInt('ACCESS_TOKEN_TTL_DAYS', 90, 1, 365),
+    landingGrants,
     warnings: Object.freeze(warnings),
   });
 }

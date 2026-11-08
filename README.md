@@ -245,7 +245,9 @@ Códigos: `BAD_REQUEST`, `UNSUPPORTED_MEDIA_TYPE` (415), `PAYLOAD_TOO_LARGE` (41
 | `IMAGE_SIGNING_SECRET` | derivado | Segredo que assina as URLs de imagem, os tokens da verificação humana e os tokens de acesso (com uma chave derivada por finalidade). Defina para mantê-los válidos ao trocar a chave do Gemini; trocar o segredo pede uma nova verificação e uma nova ativação a todos. |
 | `UPSTASH_REDIS_REST_URL` | — | REST URL do banco Upstash Redis (precisa ser `https`). |
 | `UPSTASH_REDIS_REST_TOKEN` | — | REST Token do mesmo banco. Com URL e token definidos, o paywall liga sozinho. |
-| `CAKTO_WEBHOOK_SECRET` | — | Secret que a Cakto mostra ao criar o webhook. Sem ele, o webhook recusa tudo (`503`). |
+| `LP_ACCESS_TOKEN_SECRET` | — | O mesmo valor do `ACCESS_TOKEN_SECRET` do projeto `lp-pratorapido` (32+ caracteres). Sem ele, o app não encontra os compradores registrados pela landing page. |
+| `LP_REDIS_PREFIX` | `pratorapido:lp:` | O mesmo `REDIS_PREFIX` da landing page. |
+| `CAKTO_WEBHOOK_SECRET` | — | Opcional: webhook próprio do app. Secret que a Cakto mostra ao criar esse webhook; sem ele, esse webhook recusa tudo (`503`). |
 | `CAKTO_CHECKOUT_URL` | — | Link do checkout da Cakto usado no botão "Comprar Acesso" (`https`). |
 | `CAKTO_PRODUCT_IDS` | — | Opcional. IDs de produto, short ids ou IDs de oferta (separados por vírgula) que liberam o app. Vazio = qualquer produto da conta. |
 | `ACCESS_PRICE_LABEL` | `R$ 21,90` | Preço mostrado no botão de compra. |
@@ -255,29 +257,36 @@ Códigos: `BAD_REQUEST`, `UNSUPPORTED_MEDIA_TYPE` (415), `PAYLOAD_TOO_LARGE` (41
 
 ## Acesso pago (Cakto + Upstash Redis)
 
-O app é liberado por e-mail, sem senha: quem comprou na Cakto digita o mesmo e-mail e o aparelho fica liberado. A lista de compradores fica no Upstash Redis (plano gratuito), sem SQL nem Supabase.
+O app é liberado por e-mail, sem senha: quem comprou na Cakto digita o mesmo e-mail e o aparelho fica liberado. Os compradores ficam no Upstash Redis (plano gratuito), sem SQL nem Supabase.
+
+O app aceita duas fontes, no mesmo banco:
+
+1. **Landing page (principal)**: a Cakto chama o webhook do projeto `lp-pratorapido`, que grava `pratorapido:lp:grant:<hmac do e-mail>` com `{"status":"active"}` (ou `"revoked"` depois de reembolso, chargeback ou cancelamento). O e-mail não aparece na chave: ela é um HMAC derivado do `ACCESS_TOKEN_SECRET` da landing page, por isso o app precisa do mesmo valor em `LP_ACCESS_TOKEN_SECRET`.
+2. **Lista do app**: `buyer:<email>`, preenchida pelo webhook próprio do app (`/api/webhook/cakto`, opcional) ou à mão (`npm run buyers -- add`).
 
 ### Configurar
 
-1. Crie um banco em <https://console.upstash.com> e copie a **REST URL** e o **REST Token** para `UPSTASH_REDIS_REST_URL` e `UPSTASH_REDIS_REST_TOKEN`.
-2. Na Cakto, crie um webhook apontando para `https://<seu-domínio>/api/webhook/cakto` com os eventos de compra aprovada (`purchase_approved`), reembolso (`refund`) e chargeback (`chargeback`). Copie o secret do webhook para `CAKTO_WEBHOOK_SECRET`.
-3. Coloque o link do checkout em `CAKTO_CHECKOUT_URL` e, se a conta tiver outros produtos, os IDs deste em `CAKTO_PRODUCT_IDS`.
-4. Reinicie o servidor. O log mostra `Paywall: on`, testa a conexão com o Upstash e avisa o que faltar.
+1. Crie um banco em <https://console.upstash.com> e copie a **REST URL** e o **REST Token** para `UPSTASH_REDIS_REST_URL` e `UPSTASH_REDIS_REST_TOKEN` (o mesmo banco da landing page).
+2. Coloque em `LP_ACCESS_TOKEN_SECRET` o mesmo valor do `ACCESS_TOKEN_SECRET` da landing page (e em `LP_REDIS_PREFIX` o `REDIS_PREFIX` dela, se não for o padrão).
+3. Opcional, webhook próprio: na Cakto, crie um webhook para `https://<seu-domínio>/api/webhook/cakto` com os eventos `purchase_approved`, `refund` e `chargeback`, e copie o secret dele para `CAKTO_WEBHOOK_SECRET`.
+4. Coloque o link do checkout em `CAKTO_CHECKOUT_URL` e, se a conta tiver outros produtos, os IDs deste em `CAKTO_PRODUCT_IDS`.
+5. Reinicie o servidor. O log mostra `Paywall: on` com as fontes ativas, testa a conexão com o Upstash e avisa o que faltar.
 
 ### Como funciona
 
-- **Webhook**: confere a assinatura `X-Cakto-Signature` (HMAC-SHA256 de `timestamp.corpo`, até 5 minutos de diferença) ou, em webhooks antigos, o campo `secret` do corpo. O e-mail (`data.customer.email`) é limpo (trim + minúsculas) e salvo no Redis em `buyer:<email>`, um conjunto com os IDs dos pedidos. Reembolso e chargeback tiram o pedido; o acesso cai quando não sobra nenhum. O processamento é idempotente, porque a Cakto reenvia em caso de falha de rede.
+- **Landing page**: `POST /api/verify-email` calcula a chave do e-mail e libera quando o grant está `active`. Um reembolso registrado pela landing page bloqueia o app na próxima verificação (até ~10 minutos com o cache).
+- **Webhook próprio**: confere a assinatura `X-Cakto-Signature` (HMAC-SHA256 de `timestamp.corpo`, até 5 minutos de diferença) ou, em webhooks antigos, o campo `secret` do corpo. O e-mail (`data.customer.email`) é limpo (trim + minúsculas) e salvo no Redis em `buyer:<email>`, um conjunto com os IDs dos pedidos. Reembolso e chargeback tiram o pedido; o acesso cai quando não sobra nenhum. O processamento é idempotente, porque a Cakto reenvia em caso de falha de rede.
 - Se o Upstash falhar, o webhook responde `503`. A Cakto **não** reenvia respostas de erro sozinha: use "Reenviar evento" no painel (o log do servidor avisa).
-- **Verificação**: `POST /api/verify-email` confere o e-mail e devolve um **token de acesso** assinado (90 dias). O app guarda o token e a flag `prato_rapido_access` no `localStorage` e renova o token sozinho perto do fim.
+- **Verificação**: `POST /api/verify-email` confere as duas fontes ao mesmo tempo e devolve um **token de acesso** assinado (90 dias). O app guarda o token e a flag `prato_rapido_access` no `localStorage` e renova o token sozinho perto do fim.
 - **No servidor**: as rotas de IA exigem `X-Access-Token`, então apagar a tela pelo DevTools ou editar o `localStorage` não libera a IA. Um reembolso bloqueia o token em até ~10 minutos (cache de verificação). Se o Upstash cair, quem já tem token continua usando (falha aberta) e novas ativações esperam.
 - O paywall liga sozinho quando o Upstash está configurado. Para desenvolver sem ele, use `PAYWALL_ENABLED=false`.
 
 ### Testar
 
-- Libere um e-mail à mão, sem compra real: `npm run buyers -- add voce@email.com` (também `check` e `remove`).
+- Libere um e-mail à mão, sem compra real: `npm run buyers -- add voce@email.com` (também `remove`). `npm run buyers -- check voce@email.com` diz se o e-mail está liberado e por qual fonte (landing page ou lista do app).
 - Para receber o webhook no seu computador, exponha a porta da API com um túnel (ex.: `cloudflared tunnel --url http://localhost:3001`) e use a URL gerada no webhook da Cakto.
 
-**Limite honesto:** o e-mail é a única credencial. Quem souber o e-mail de um comprador consegue liberar um aparelho. Para algo mais forte, seria preciso enviar um código por e-mail (OTP), o que exige um serviço de envio.
+**Limite honesto:** o e-mail é a única credencial. Quem souber o e-mail de um comprador consegue liberar um aparelho. Para algo mais forte, seria preciso enviar um código por e-mail (OTP), como a landing page já faz no fluxo dela.
 
 ## Jornada 30 Dias: como funciona
 
@@ -335,7 +344,7 @@ O `vercel.json` manda a Vercel rodar `npm run build:vercel`, que gera a saída p
 - **API**: `/api/*` vai para uma Vercel Function (Node 24) que exporta o app Express (`export default app`). O Express recebe o caminho original e roteia como no servidor local. O código do servidor é empacotado em um único arquivo JavaScript no build, então a Vercel não compila TypeScript: o compilador dela usa a API JavaScript do TypeScript, que o TypeScript 7 não tem mais.
 - Na Vercel o `listen()` não roda (a Vercel chama o app a cada requisição), o proxy da Vercel é confiável por padrão (`TRUST_PROXY` não é necessário) e o cache de fotos usa a pasta temporária.
 
-**Variáveis** (Settings → Environment Variables, depois faça um redeploy): `GEMINI_API_KEY`, `IMAGE_SIGNING_SECRET` (recomendado), `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, `CAKTO_WEBHOOK_SECRET`, `CAKTO_CHECKOUT_URL` e, se quiser, `POLLINATIONS_API_KEY`.
+**Variáveis** (Settings → Environment Variables, depois faça um redeploy): `GEMINI_API_KEY`, `IMAGE_SIGNING_SECRET` (recomendado), `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, `LP_ACCESS_TOKEN_SECRET`, `CAKTO_CHECKOUT_URL` e, se quiser, `CAKTO_WEBHOOK_SECRET` (webhook próprio) e `POLLINATIONS_API_KEY`.
 
 **Webhook da Cakto**: use o domínio de produção, `https://<seu-projeto>.vercel.app/api/webhook/cakto`. Deploys de preview podem estar protegidos por login da Vercel e recusar a Cakto.
 

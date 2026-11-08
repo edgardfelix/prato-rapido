@@ -20,7 +20,8 @@ function logPaywall(checkConnection: boolean): void {
         : '  Paywall: off (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN not set) — everyone can use the app.',
     );
   } else {
-    console.log('  Paywall: on · buyers in Upstash Redis · Cakto webhook at POST /api/webhook/cakto');
+    const sources = paywall.landingGrants ? `landing page grants (${paywall.landingGrants.prefix}grant:*) + buyer list` : 'buyer list';
+    console.log(`  Paywall: on · ${sources} in Upstash Redis · Cakto webhook at POST /api/webhook/cakto`);
     if (checkConnection && paywall.upstash) {
       void pingUpstash()
         .then((ok) => console.log(ok ? '[paywall] Upstash connection OK.' : '[paywall] Upstash answered PING unexpectedly.'))

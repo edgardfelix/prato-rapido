@@ -1,17 +1,53 @@
+import { createHmac } from 'node:crypto';
+import { env } from '../config/env.ts';
 import { SERVER_LIMITS } from '../config/limits.ts';
 import { parseEmail } from '../validation/email.ts';
 import { upstashCommand, UpstashError } from './upstash.service.ts';
 
 /*
- * Buyer list in Upstash Redis (no SQL, no Supabase).
+ * Who may activate the app, in Upstash Redis (no SQL, no Supabase). Two sources:
  *
- * `buyer:<email>` is a SET of the order ids that grant access: EXISTS means
- * "authorized", and Redis drops a set when its last member goes, so refunding
- * one of two orders keeps the access paid by the other.
- * `refund:<orderId>` remembers refunded orders for a while, so a late retry
- * of purchase_approved can never bring a refunded order back.
- * Both writes are Lua scripts (EVAL), so each one is atomic.
+ * 1. Landing page grants (the main one). Cakto calls the lp-pratorapido
+ *    webhook, which stores `{prefix}grant:{hmac}` = AccessGrant JSON
+ *    ({ status: 'active' | 'revoked', orders, createdAt, updatedAt }). A
+ *    refund, chargeback or cancellation flips the status to 'revoked'.
+ *
+ * 2. This app's own list. `buyer:<email>` is a SET of the order ids that grant
+ *    access (this app's Cakto webhook, or `npm run buyers -- add`): EXISTS
+ *    means "authorized", and Redis drops a set when its last member goes, so
+ *    refunding one of two orders keeps the access paid by the other.
+ *    `refund:<orderId>` remembers refunded orders for a while, so a late retry
+ *    of purchase_approved can never bring a refunded order back. Both writes
+ *    are Lua scripts (EVAL), so each one is atomic.
  */
+
+/** Where an e-mail's access comes from. */
+export type AccessSource = 'landing-page' | 'buyer-list';
+
+/**
+ * Redis key of a landing page grant. Mirrors lp-pratorapido
+ * (server/src/lib/crypto.ts deriveKey + hmacHex, server/src/store/redis.ts):
+ * hmac = HMAC-SHA256(key = HMAC-SHA256(ACCESS_TOKEN_SECRET, 'pratorapido:email-key'), email).
+ * The e-mail never appears in the key, which is why this app needs the same
+ * secret. E-mails arrive here already normalized and validated (lowercase,
+ * printable ASCII, no spaces), exactly what the landing page's normalizeEmail
+ * gives for any valid address.
+ */
+export function landingGrantKey(email: string, landing: { secret: string; prefix: string }): string {
+  const emailKey = createHmac('sha256', landing.secret).update('pratorapido:email-key').digest();
+  return `${landing.prefix}grant:${createHmac('sha256', emailKey).update(email).digest('hex')}`;
+}
+
+/** True for a landing page grant whose status is still 'active'. */
+export function isActiveLandingGrant(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  try {
+    const grant: unknown = JSON.parse(value);
+    return typeof grant === 'object' && grant !== null && (grant as { status?: unknown }).status === 'active';
+  } catch {
+    return false;
+  }
+}
 
 /** Order id used for access granted by hand (e.g. `npm run buyers -- add <email>`). */
 export const MANUAL_ORDER = 'manual';
@@ -72,10 +108,25 @@ export async function removeAuthorizedEmail(email: string, orderId?: string): Pr
   return typeof result === 'number' ? result : 0;
 }
 
-export async function isEmailAuthorized(email: string): Promise<boolean> {
+/**
+ * Checks both sources in parallel (one round trip of latency) and says which
+ * one grants access, or null when neither does.
+ */
+export async function findAccessSource(email: string): Promise<AccessSource | null> {
   const buyer = parseEmail(email);
-  if (!buyer) return false;
-  return (await upstashCommand(['EXISTS', buyerKey(buyer)])) === 1;
+  if (!buyer) return null;
+  const landing = env.paywall.landingGrants;
+  const [grant, listed] = await Promise.all([
+    landing ? upstashCommand(['GET', landingGrantKey(buyer, landing)]) : Promise.resolve(null),
+    upstashCommand(['EXISTS', buyerKey(buyer)]),
+  ]);
+  if (isActiveLandingGrant(grant)) return 'landing-page';
+  if (listed === 1) return 'buyer-list';
+  return null;
+}
+
+export async function isEmailAuthorized(email: string): Promise<boolean> {
+  return (await findAccessSource(email)) !== null;
 }
 
 /* Revocation check for the AI routes, cached so a recipe does not cost a Redis round trip each time. */
@@ -113,7 +164,11 @@ export async function isEmailStillAuthorized(email: string, now = Date.now()): P
   }
 }
 
-/** Drops the cached answer, so a refund handled by this process takes effect immediately. */
+/**
+ * Drops the cached answer, so a refund handled by this process takes effect
+ * immediately. A refund handled by the landing page reaches the AI routes when
+ * the cached answer expires (SERVER_LIMITS.accessCacheMs).
+ */
 export function forgetCachedAccess(email: string): void {
   accessCache.delete(email);
 }
