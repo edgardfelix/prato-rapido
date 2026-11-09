@@ -1,15 +1,13 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PropsWithChildren } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type PropsWithChildren } from 'react';
 import type { AccessGrant, AccessStatusResponse } from '@/@types';
 import { ACCESS_FLAG_KEY, STORAGE_KEYS } from '@/constants/storage';
 import { useLocalStorage } from '@/hooks/useLocalStorage';
 import { accessService } from '@/services/accessService';
-import { registerAccess } from '@/services/httpClient';
+import { ApiClientError, registerAccess } from '@/services/httpClient';
 import { sanitizeAccessGrant, sanitizePaywallStatus } from '@/utils/validators';
 import { AccessContext, type AccessContextValue, type AccessState } from './AccessContext';
 
 const DEFAULT_PRICE_LABEL = 'R$ 21,90';
-/** Tokens closer than this to their expiry are renewed silently with the saved purchase e-mail. */
-const RENEW_BEFORE_MS = 15 * 24 * 60 * 60_000;
 
 function readFlag(): boolean {
   try {
@@ -29,10 +27,12 @@ function writeFlag(granted: boolean): void {
 }
 
 /**
- * Paid access (Cakto + Upstash). The device is unlocked when it holds the
- * `prato_rapido_access` flag and a valid signed token. Those only skip the
- * activation screen: the server checks the token on every AI request, so
- * editing localStorage unlocks the screens but never the paid features.
+ * Paid access (Cakto + Upstash). Signing in (e-mail + password) makes the
+ * server set an HttpOnly session cookie that page scripts never see; this
+ * device only keeps the `prato_rapido_access` flag plus the e-mail and the
+ * session expiry, to skip the sign-in screen. The server checks the cookie on
+ * every AI request, and once per visit the app asks whether the session still
+ * holds (refund, new password, expiry), which also extends it.
  */
 export function AccessProvider({ children }: PropsWithChildren) {
   const [grant, setGrant, removeGrant] = useLocalStorage<AccessGrant | null>(STORAGE_KEYS.access, null, sanitizeAccessGrant);
@@ -41,18 +41,14 @@ export function AccessProvider({ children }: PropsWithChildren) {
   const [statusError, setStatusError] = useState(false);
   const [statusRequest, setStatusRequest] = useState(0);
   const [lockMessage, setLockMessage] = useState<string | null>(null);
-  const tokenRef = useRef<string | null>(grant?.token ?? null);
-  const renewedRef = useRef(false);
+  /** The session was confirmed during this visit (just signed in, or checked with the server). */
+  const sessionCheckedRef = useRef(false);
 
   const hasLocalAccess = flag && grant !== null;
 
-  useLayoutEffect(() => {
-    tokenRef.current = hasLocalAccess ? (grant?.token ?? null) : null;
-  });
-
   const grantAccess = useCallback(
     (next: AccessGrant) => {
-      tokenRef.current = next.token;
+      sessionCheckedRef.current = true;
       setGrant(next);
       writeFlag(true);
       setFlag(true);
@@ -63,12 +59,11 @@ export function AccessProvider({ children }: PropsWithChildren) {
 
   const lock = useCallback(
     (message: string | null) => {
-      tokenRef.current = null;
       removeGrant();
       writeFlag(false);
       setFlag(false);
       setLockMessage(message);
-      // The server just proved it has a paywall: show the activation screen right away.
+      // The server just proved it has a paywall: show the sign-in screen right away.
       setPaywall((current) => ({
         enabled: true,
         checkoutUrl: current?.checkoutUrl ?? null,
@@ -78,7 +73,13 @@ export function AccessProvider({ children }: PropsWithChildren) {
     [removeGrant, setPaywall],
   );
 
-  const signOut = useCallback(() => lock(null), [lock]);
+  const signOut = useCallback(() => {
+    // Only the server can remove an HttpOnly cookie.
+    void accessService.logout().catch(() => undefined);
+    sessionCheckedRef.current = false;
+    lock(null);
+  }, [lock]);
+
   const retryStatus = useCallback(() => {
     setStatusError(false);
     setStatusRequest((count) => count + 1);
@@ -102,21 +103,26 @@ export function AccessProvider({ children }: PropsWithChildren) {
     return () => controller.abort();
   }, [hasLocalAccess, statusRequest, setPaywall]);
 
-  // Near its expiry the token is renewed with the saved e-mail; a refunded purchase locks the device.
+  // Once per visit: does the session cookie still hold? 401 locks the app; offline keeps it (the AI routes still check).
   useEffect(() => {
-    if (!hasLocalAccess || !grant || renewedRef.current) return;
-    if (Date.parse(grant.expiresAt) - Date.now() > RENEW_BEFORE_MS) return;
-    renewedRef.current = true;
-    accessService.verifyEmail({ email: grant.email }).then(
-      (result) => {
-        if (result.success) grantAccess({ email: grant.email, token: result.accessToken, expiresAt: result.expiresAt });
-        else lock('Não encontramos mais a compra deste e-mail. Confira o e-mail usado na Cakto.');
+    if (!hasLocalAccess || sessionCheckedRef.current) return;
+    sessionCheckedRef.current = true;
+    const controller = new AbortController();
+    accessService.getSession(controller.signal).then(
+      (session) => {
+        setGrant((current) => (current && current.expiresAt !== session.expiresAt ? { ...current, expiresAt: session.expiresAt } : current));
       },
-      () => undefined, // Offline: keep the current token and try again on the next visit.
+      (error: unknown) => {
+        if (error instanceof ApiClientError && error.status === 401) lock(error.message);
+      },
     );
-  }, [hasLocalAccess, grant, grantAccess, lock]);
+    return () => {
+      controller.abort();
+      sessionCheckedRef.current = false;
+    };
+  }, [hasLocalAccess, lock, setGrant]);
 
-  // Another tab activated or signed out.
+  // Another tab signed in or out.
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
       if (event.key === null || event.key === ACCESS_FLAG_KEY) setFlag(readFlag());
@@ -126,10 +132,7 @@ export function AccessProvider({ children }: PropsWithChildren) {
   }, []);
 
   useEffect(() => {
-    registerAccess({
-      getToken: () => tokenRef.current,
-      onAccessLost: (message) => lock(message),
-    });
+    registerAccess({ onAccessLost: (message) => lock(message) });
     return () => registerAccess(null);
   }, [lock]);
 

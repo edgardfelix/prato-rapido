@@ -189,13 +189,12 @@ export const sanitizeSettings = (value: unknown, fallback: AppSettings): AppSett
   isRecord(value) && typeof value.soundEnabled === 'boolean' ? { soundEnabled: value.soundEnabled } : fallback;
 
 /** This device's buyer access, only while the token has not expired. */
+/** Saved sign-in of this device. Older e-mail-only activations (no `v: 2`) are dropped: they must sign in with a password. */
 export function sanitizeAccessGrant(value: unknown, fallback: AccessGrant | null): AccessGrant | null {
-  if (!isRecord(value) || !isString(value.email) || !isString(value.token) || !isString(value.expiresAt)) return fallback;
-  if (value.token.length > 1024 || !isValidEmail(value.email)) return fallback;
+  if (!isRecord(value) || value.v !== 2 || !isString(value.email) || !isString(value.expiresAt)) return fallback;
+  if (!isValidEmail(value.email)) return fallback;
   const expiresAt = Date.parse(value.expiresAt);
-  return Number.isFinite(expiresAt) && expiresAt > Date.now()
-    ? { email: value.email, token: value.token, expiresAt: value.expiresAt }
-    : fallback;
+  return Number.isFinite(expiresAt) && expiresAt > Date.now() ? { v: 2, email: value.email, expiresAt: value.expiresAt } : fallback;
 }
 
 /** Paywall status from the server; the checkout link must be https (it becomes an href). */

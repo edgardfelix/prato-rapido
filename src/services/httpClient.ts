@@ -57,10 +57,10 @@ interface RequestOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
   /**
-   * AI routes: sends the buyer access token and the human-verification token.
-   * If the server asks for a new human check (CHALLENGE_REQUIRED) it is shown
-   * and the request is retried once; if it refuses the access (ACCESS_REQUIRED)
-   * the activation screen comes back.
+   * AI routes: sends the human-verification token (the buyer session travels
+   * in its HttpOnly cookie). If the server asks for a new human check
+   * (CHALLENGE_REQUIRED) it is shown and the request is retried once; if it
+   * refuses the access (ACCESS_REQUIRED) the sign-in screen comes back.
    */
   humanCheck?: boolean;
 }
@@ -74,8 +74,7 @@ export interface HumanCheckBridge {
 
 /** Bridge to the paid-access state, registered by AccessProvider. */
 export interface AccessBridge {
-  getToken: () => string | null;
-  /** The server refused this device's access (refund, expiry): lock the app again. */
+  /** The server refused this device's session (refund, new password, expiry): lock the app again. */
   onAccessLost: (message: string) => void;
 }
 
@@ -91,7 +90,6 @@ export function registerAccess(bridge: AccessBridge | null): void {
 }
 
 export const HUMAN_TOKEN_HEADER = 'X-Human-Token';
-export const ACCESS_TOKEN_HEADER = 'X-Access-Token';
 
 /** POSTs JSON with timeout + cancellation and returns the parsed JSON body. */
 export async function postJson<TResponse>(path: string, body: unknown, options: RequestOptions = {}): Promise<TResponse> {
@@ -135,8 +133,6 @@ async function requestJson<TResponse>(
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (method === 'POST') headers['Content-Type'] = 'application/json';
   if (humanCheck) {
-    const accessToken = accessBridge?.getToken();
-    if (accessToken) headers[ACCESS_TOKEN_HEADER] = accessToken;
     const humanToken = humanCheckBridge?.getToken();
     if (humanToken) headers[HUMAN_TOKEN_HEADER] = humanToken;
   }
@@ -145,6 +141,8 @@ async function requestJson<TResponse>(
     const response = await fetch(`${API_BASE_URL}${path}`, {
       method,
       headers,
+      // The buyer session is an HttpOnly cookie on the API's own origin.
+      credentials: 'same-origin',
       body: method === 'POST' ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });

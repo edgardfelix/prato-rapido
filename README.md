@@ -2,7 +2,7 @@
 
 Assistente culinário **mobile-first** que cria receitas de **10 a 15 minutos** com o que você tem em casa. Você digita, fotografa a geladeira ou fala os ingredientes; o **Google Gemini** monta a receita (JSON estruturado) e o **Pollinations** gera a foto do prato.
 
-- **Acesso pago** (Cakto + Upstash Redis): a tela "Ative seu Acesso ao Prato Rápido" pede o e-mail usado na compra. O webhook da Cakto cadastra cada compra aprovada, e reembolsos e chargebacks tiram o acesso. Sem banco SQL nem Supabase.
+- **Acesso pago** (Cakto + Upstash Redis): a tela "Ative seu Acesso ao Prato Rápido" pede o e-mail usado na compra e, em seguida, a **senha**: no primeiro acesso o comprador cria a senha; depois, ela é pedida em cada aparelho. A sessão fica num cookie HttpOnly. Reembolsos e chargebacks tiram o acesso. Sem banco SQL nem Supabase.
 - **Onboarding**: nome, idade e e-mail (já preenchido com o e-mail da compra) + quiz de 3 passos (nível na cozinha, restrições alimentares, tempo disponível). Tudo fica salvo **apenas no aparelho** (localStorage).
 - **Verificação rápida** (anti-robô): no primeiro acesso, toque no ícone pedido (ex.: "Toque em Cenoura"). O servidor assina o desafio e confere a resposta; o token vale 30 dias e é exigido pelas rotas de IA.
 - **Home**: saudação personalizada, atalhos *Prato Rápido 10min*, *Limpa Geladeira* e *Econômico do Dia*, a pílula **Modo Marmitas** (porções para até 4 dias na geladeira, com instruções de armazenamento, reaquecimento e congelamento), entrada multiformato (texto, câmera/galeria e voz), a **Calculadora Desperdício Zero** ("Você perde cerca de R$ 180/mês no lixo. O Prato Rápido recupera esse valor em 12 dias.") e histórico de receitas.
@@ -60,7 +60,7 @@ Assistente culinário **mobile-first** que cria receitas de **10 a 15 minutos** 
 | `npm run preview` | `build` + `start`. |
 | `npm run typecheck` | Só a checagem de tipos. |
 | `npm run lint` | Oxlint (regras de hooks do React, TypeScript e correção). |
-| `npm run buyers -- add <email>` | Libera um comprador à mão no Upstash (`remove` e `check` também). Serve para suporte e para testar sem uma compra real. |
+| `npm run buyers -- add <email>` | Libera um comprador à mão no Upstash (também `remove`, `check` e `reset-password`). Serve para suporte e para testar sem uma compra real. |
 
 ### Testando no celular
 
@@ -85,7 +85,7 @@ prato-rapido/
 │  ├─ scripts/buyers.ts         # CLI de suporte: libera, remove ou confere um comprador
 │  ├─ scripts/build-vercel.ts   # gera .vercel/output (CDN + Vercel Function + rotas e cabeçalhos)
 │  ├─ validation/               # validação estrita do payload e e-mail, sanitização da resposta da IA
-│  ├─ middleware/               # segurança, CORS/origem, rate limit, token de acesso e humano, JSON/limites, erros
+│  ├─ middleware/               # segurança, CORS/origem, rate limit, sessão do comprador e token humano, JSON/limites, erros
 │  └─ http/                     # clientApp: serve dist/ e fallback SPA; securityPolicy: cabeçalhos e CSP (hash do script inline)
 ├─ src/
 │  ├─ @types/                   # contratos: User, UserAIContext, QuizData, JourneyState, Tip, RecipeResponse, APIPayload…
@@ -97,7 +97,7 @@ prato-rapido/
 │  │  ├─ modals/                # CookingFocusMode, CelebrationModal (+ confete), HumanChallenge, AccountResetModal
 │  │  └─ templates/             # AppShell (coluna de 480px) e primitivas de página (entrada em sequência)
 │  ├─ constants/                # quiz, atalhos, equipamentos/objetivos, avatares, conquistas, dicas, desperdício, limites
-│  ├─ components/PaywallScreen.tsx # tela "Ative seu Acesso" (e-mail da compra → token de acesso)
+│  ├─ components/PaywallScreen.tsx # tela "Ative seu Acesso" (e-mail da compra → criar senha ou entrar com ela)
 │  ├─ context/                  # Theme, Sound, Access, HumanCheck, User, Recipe, Celebration, Toast e Journey (Context API + localStorage)
 │  ├─ hooks/                    # useUserProfile, useSound, useHumanCheck, useAccountReset, useLocalStorage, useWakeLock,
 │  │                            # useAudioRecorder, useToast, useHorizontalSwipe, useFocusTrap, useAnimatedNumber…
@@ -143,10 +143,14 @@ O `useAudioRecorder` grava com **MediaRecorder** e mede o nível do microfone co
 | `GET` | `/api/challenge` | Novo desafio da verificação humana (6 ícones e o nome do que tocar). |
 | `POST` | `/api/challenge/verify` | `{ token, answer }` → `{ token, expiresAt }` (token humano, 30 dias). |
 | `GET` | `/api/access/status` | `{ enabled, checkoutUrl, priceLabel }`: diz ao app se o paywall está ligado. |
-| `POST` | `/api/verify-email` | `{ email }` → `{ success: true, accessToken, expiresAt }` ou `{ success: false, message: 'E-mail não encontrado na base de compradores.' }`. 10 tentativas por IP/minuto. |
+| `POST` | `/api/verify-email` | `{ email }` → `{ isFirstAccess }` quando há compra, ou `403 NO_PURCHASE` ("E-mail não encontrado na base de compradores."). Não libera nada sozinho. 10 por IP/minuto. |
+| `POST` | `/api/auth/setup-password` | Primeiro acesso: `{ email, password }` → cria a senha (só se ainda não existir) e a sessão. |
+| `POST` | `/api/auth/login` | `{ email, password }` → sessão, ou `401 INVALID_PASSWORD` ("Senha incorreta"). 5 erros por e-mail → bloqueio de 15 min. |
+| `GET` | `/api/auth/session` | Confere o cookie de sessão (e o renova perto do fim). `401` quando a sessão não vale mais. |
+| `POST` | `/api/auth/logout` | Encerra a sessão deste aparelho. |
 | `POST` | `/api/webhook/cakto` | Recebe os eventos da Cakto (compra aprovada, reembolso, chargeback). Exige a assinatura da Cakto. |
-| `POST` | `/api/generate-recipe` | Gera a receita (JSON mode). Exige `X-Access-Token` (com o paywall ligado) e `X-Human-Token`. |
-| `POST` | `/api/transcribe` | Transcreve um áudio curto de ingredientes. Exige `X-Access-Token` (com o paywall ligado) e `X-Human-Token`. |
+| `POST` | `/api/generate-recipe` | Gera a receita (JSON mode). Exige a sessão do comprador (cookie, com o paywall ligado) e `X-Human-Token`. |
+| `POST` | `/api/transcribe` | Transcreve um áudio curto de ingredientes. Exige a sessão do comprador (cookie, com o paywall ligado) e `X-Human-Token`. |
 | `GET` | `/api/recipe-image` | Foto do prato (URL assinada, com cache). |
 | `GET` | `/api/health` | Status e modo (`ai` ou `demo`). |
 
@@ -218,7 +222,7 @@ Tailor the recipe preparation steps to prioritize their available appliances and
 { "error": { "code": "RATE_LIMITED", "message": "Muitas tentativas em pouco tempo...", "retryAfterSeconds": 30 } }
 ```
 
-Códigos: `BAD_REQUEST`, `UNSUPPORTED_MEDIA_TYPE` (415), `PAYLOAD_TOO_LARGE` (413), `CHALLENGE_REQUIRED` (403, refaça a verificação), `CHALLENGE_FAILED` (resposta errada ou desafio expirado/usado), `ACCESS_REQUIRED` (403, ative o acesso com o e-mail da compra), `ACCESS_UNAVAILABLE` (503, Upstash fora do ar), `UNAUTHORIZED` (401, webhook sem assinatura válida), `RATE_LIMITED`, `AI_*`, `TIMEOUT`, `INTERNAL`.
+Códigos: `BAD_REQUEST`, `UNSUPPORTED_MEDIA_TYPE` (415), `PAYLOAD_TOO_LARGE` (413), `CHALLENGE_REQUIRED` (403, refaça a verificação), `CHALLENGE_FAILED` (resposta errada ou desafio expirado/usado), `ACCESS_REQUIRED` (403 nas rotas de IA / 401 em `/api/auth/session`: entre com e-mail e senha), `NO_PURCHASE` (403, e-mail sem compra), `INVALID_PASSWORD` (401), `WEAK_PASSWORD` (400), `PASSWORD_ALREADY_SET` / `PASSWORD_NOT_SET` (409), `ACCESS_UNAVAILABLE` (503, Upstash fora do ar), `UNAUTHORIZED` (401, webhook sem assinatura válida), `RATE_LIMITED`, `AI_*`, `TIMEOUT`, `INTERNAL`.
 
 ### Verificação rápida (anti-robô)
 
@@ -251,7 +255,7 @@ Códigos: `BAD_REQUEST`, `UNSUPPORTED_MEDIA_TYPE` (415), `PAYLOAD_TOO_LARGE` (41
 | `CAKTO_CHECKOUT_URL` | — | Link do checkout da Cakto usado no botão "Comprar Acesso" (`https`). |
 | `CAKTO_PRODUCT_IDS` | — | Opcional. IDs de produto, short ids ou IDs de oferta (separados por vírgula) que liberam o app. Vazio = qualquer produto da conta. |
 | `ACCESS_PRICE_LABEL` | `R$ 21,90` | Preço mostrado no botão de compra. |
-| `ACCESS_TOKEN_TTL_DAYS` | `90` | Validade do token de acesso. O app renova sozinho nos últimos 15 dias. |
+| `ACCESS_TOKEN_TTL_DAYS` | `90` | Validade da sessão (cookie). É renovada sozinha quando o app é aberto nos últimos 15 dias. |
 | `PAYWALL_ENABLED` | automático | `false` deixa o app aberto mesmo com o Upstash configurado. |
 | `VITE_API_BASE_URL` | — | (Front-end) URL da API quando ela estiver em outro domínio. |
 
@@ -274,19 +278,26 @@ O app aceita duas fontes, no mesmo banco:
 
 ### Como funciona
 
-- **Landing page**: `POST /api/verify-email` calcula a chave do e-mail e libera quando o grant está `active`. Um reembolso registrado pela landing page bloqueia o app na próxima verificação (até ~10 minutos com o cache).
+- **Login em dois passos, sem envio de e-mail**:
+  1. `POST /api/verify-email` confere a compra (grant `active` da landing page ou `buyer:<email>`). Sem compra: `403`. Com compra: `{ isFirstAccess }`, que diz se o e-mail já tem senha.
+  2. Primeiro acesso: o comprador define a senha (`/api/auth/setup-password`). Depois: digita a senha (`/api/auth/login`).
+- **Senha**: mínimo de 8 caracteres, recusa as óbvias (`12345678`, `senha123`, o próprio e-mail). Fica em `pratorapido:pass:<email>` como hash **scrypt** (N=2^15, r=8, p=3, salt aleatório), nunca a senha. A primeira senha é gravada com `SET NX`: depois de criada, ninguém consegue trocá-la pelo app.
+- **Força bruta**: 5 senhas erradas em 15 minutos bloqueiam aquele e-mail até a janela acabar (contador em `pratorapido:pass-fail:<email>`, válido entre todas as instâncias), além do limite de 10 tentativas por IP/minuto.
+- **Sessão**: cookie `pr_session` HttpOnly, `Secure` em HTTPS, `SameSite=Strict`, `Path=/api`, 90 dias. Scripts da página não conseguem ler o cookie, e outros sites não conseguem usá-lo. O token leva uma impressão da senha: se ela for redefinida, todas as sessões antigas caem. Ativações antigas, só com e-mail, não valem mais.
+- **Reembolso**: um reembolso registrado pela landing page (ou pelo webhook do app) derruba a sessão na próxima verificação (até ~10 minutos com o cache) e impede novos logins, mesmo com a senha certa.
 - **Webhook próprio**: confere a assinatura `X-Cakto-Signature` (HMAC-SHA256 de `timestamp.corpo`, até 5 minutos de diferença) ou, em webhooks antigos, o campo `secret` do corpo. O e-mail (`data.customer.email`) é limpo (trim + minúsculas) e salvo no Redis em `buyer:<email>`, um conjunto com os IDs dos pedidos. Reembolso e chargeback tiram o pedido; o acesso cai quando não sobra nenhum. O processamento é idempotente, porque a Cakto reenvia em caso de falha de rede.
 - Se o Upstash falhar, o webhook responde `503`. A Cakto **não** reenvia respostas de erro sozinha: use "Reenviar evento" no painel (o log do servidor avisa).
-- **Verificação**: `POST /api/verify-email` confere as duas fontes ao mesmo tempo e devolve um **token de acesso** assinado (90 dias). O app guarda o token e a flag `prato_rapido_access` no `localStorage` e renova o token sozinho perto do fim.
-- **No servidor**: as rotas de IA exigem `X-Access-Token`, então apagar a tela pelo DevTools ou editar o `localStorage` não libera a IA. Um reembolso bloqueia o token em até ~10 minutos (cache de verificação). Se o Upstash cair, quem já tem token continua usando (falha aberta) e novas ativações esperam.
+- **No aparelho**: o app guarda só a flag `prato_rapido_access`, o e-mail e a validade (sem segredo nenhum) para pular a tela de login. Uma vez por visita, ele confere a sessão em `GET /api/auth/session`.
+- **No servidor**: as rotas de IA exigem o cookie de sessão, então apagar a tela pelo DevTools ou editar o `localStorage` não libera a IA. Se o Upstash cair, quem já tem sessão continua usando (falha aberta) e novos logins esperam.
 - O paywall liga sozinho quando o Upstash está configurado. Para desenvolver sem ele, use `PAYWALL_ENABLED=false`.
 
 ### Testar
 
-- Libere um e-mail à mão, sem compra real: `npm run buyers -- add voce@email.com` (também `remove`). `npm run buyers -- check voce@email.com` diz se o e-mail está liberado e por qual fonte (landing page ou lista do app).
+- Libere um e-mail à mão, sem compra real: `npm run buyers -- add voce@email.com` (também `remove`). `npm run buyers -- check voce@email.com` diz se o e-mail está liberado, por qual fonte (landing page ou lista do app) e se já tem senha.
+- **Esqueceu a senha** (não há envio de e-mail): `npm run buyers -- reset-password comprador@email.com` apaga a senha e o bloqueio. No próximo acesso o comprador cria outra, e as sessões abertas com a senha antiga caem.
 - Para receber o webhook no seu computador, exponha a porta da API com um túnel (ex.: `cloudflared tunnel --url http://localhost:3001`) e use a URL gerada no webhook da Cakto.
 
-**Limite honesto:** o e-mail é a única credencial. Quem souber o e-mail de um comprador consegue liberar um aparelho. Para algo mais forte, seria preciso enviar um código por e-mail (OTP), como a landing page já faz no fluxo dela.
+**Limite honesto:** sem envio de e-mail, o primeiro acesso não prova que a pessoa é dona do endereço. Quem souber o e-mail de um comprador **e chegar antes dele** consegue criar a senha. O comprador percebe na hora (o app pede "Digite sua senha" em vez de "Defina sua senha"), e o suporte resolve com `reset-password`, que também derruba a sessão de quem criou a senha. Para fechar essa brecha, seria preciso confirmar o e-mail com um código (OTP), como a landing page já faz no fluxo dela.
 
 ## Jornada 30 Dias: como funciona
 
@@ -314,7 +325,7 @@ Sem chave, a fila é compartilhada por todos os usuários do servidor (uma foto 
 ## Segurança e privacidade
 
 - A `GEMINI_API_KEY` existe apenas no servidor. O navegador fala só com `/api`.
-- **Acesso pago** conferido no servidor: as rotas de IA exigem um token de acesso assinado e checam se a compra não foi reembolsada. O webhook só aceita entregas assinadas pela Cakto e fica fechado enquanto `CAKTO_WEBHOOK_SECRET` não for definido. Os logs mostram só o e-mail mascarado (`jo***@email.com`).
+- **Acesso pago** conferido no servidor: login com senha (hash scrypt, bloqueio contra força bruta) e sessão em cookie HttpOnly + `SameSite=Strict`. As rotas de IA checam se a compra não foi reembolsada e se a senha não foi redefinida. O webhook só aceita entregas assinadas pela Cakto e fica fechado enquanto `CAKTO_WEBHOOK_SECRET` não for definido. Os logs mostram só o e-mail mascarado (`jo***@email.com`).
 - **Verificação humana** assinada exigida pelas rotas de IA, com limite por token (veja "Verificação rápida" acima, inclusive o limite do que ela consegue garantir).
 - **Entrada no cliente**: todo texto enviado passa por `sanitizeText` (remove tags e blocos `<script>`/`<style>`, caracteres de controle e invisíveis/bidirecionais, normaliza Unicode e corta no limite), e o payload só leva campos conhecidos com valores de allow-list.
 - **Entrada no servidor**: validação estrita de tudo que entra (objetos com conjunto fechado de campos, tipos, enums, tamanho de textos e listas, HTML recusado, MIME e base64 de foto/áudio), `Content-Type` obrigatório e limite de corpo por rota, aplicado antes do parse.

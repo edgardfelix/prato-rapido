@@ -6,7 +6,7 @@ export const STORAGE_KEYS = {
   journey: 'prato-rapido:journey',
   settings: 'prato-rapido:settings',
   verification: 'prato-rapido:verification',
-  /** Signed buyer access token + purchase e-mail (paywall). */
+  /** Purchase e-mail + session expiry (paywall). The session itself is an HttpOnly cookie. */
   access: 'prato-rapido:access',
   /** Last known paywall status from the server (renders instantly, revalidated in the background). */
   paywall: 'prato-rapido:paywall',

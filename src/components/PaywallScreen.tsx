@@ -1,6 +1,20 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
-import { Check, KeyRound, Mail, RefreshCw, ShieldCheck, ShoppingBag } from 'lucide-react';
+import {
+  ArrowLeft,
+  Check,
+  Eye,
+  EyeOff,
+  KeyRound,
+  Lock,
+  LockKeyhole,
+  LogIn,
+  Mail,
+  RefreshCw,
+  ShieldCheck,
+  ShoppingBag,
+} from 'lucide-react';
 import styled, { css } from 'styled-components';
+import type { SessionResponse } from '@/@types';
 import { Button } from '@/components/atoms/Button';
 import { Input } from '@/components/atoms/Input';
 import { BrandLogo } from '@/components/molecules/BrandLogo';
@@ -9,7 +23,7 @@ import { useAccess } from '@/hooks/useAccess';
 import { useSound } from '@/hooks/useSound';
 import { useToast } from '@/hooks/useToast';
 import { accessService } from '@/services/accessService';
-import { getErrorMessage } from '@/services/httpClient';
+import { ApiClientError, getErrorMessage } from '@/services/httpClient';
 import { fadeInUp, medalPop, pulseRing } from '@/styles/animations';
 import { cardSurface, pressable, visuallyHidden } from '@/styles/mixins';
 import { EMAIL_MAX_LENGTH, isValidEmail, normalizeEmail } from '@/utils/email';
@@ -17,8 +31,12 @@ import { prefersReducedMotion } from '@/utils/motion';
 
 /** How long the "Acesso liberado!" moment stays before the app opens. */
 const SUCCESS_MS = 1_600;
+/** Same rule as the server (it also refuses passwords that are too easy to guess). */
+const PASSWORD_MIN_CHARS = 8;
+const PASSWORD_MAX_CHARS = 128;
 
-type Stage = 'idle' | 'checking' | 'not-found' | 'success';
+/** e-mail → first access (create the password) or sign in (type it) → success. */
+type Step = 'email' | 'setup' | 'login' | 'success';
 
 const Screen = styled.main`
   display: flex;
@@ -84,6 +102,11 @@ const Subtitle = styled.p`
   max-width: 34ch;
   color: ${({ theme }) => theme.colors.textSecondary};
   line-height: ${({ theme }) => theme.lineHeights.normal};
+  overflow-wrap: anywhere;
+
+  strong {
+    color: ${({ theme }) => theme.colors.textPrimary};
+  }
 `;
 
 const Form = styled.form`
@@ -93,6 +116,7 @@ const Form = styled.form`
   gap: 14px;
   margin-top: 4px;
   text-align: left;
+  animation: ${fadeInUp} 320ms ${({ theme }) => theme.motion.easeOut} both;
 `;
 
 const Block = styled.div`
@@ -104,7 +128,15 @@ const Block = styled.div`
   animation: ${fadeInUp} 320ms ${({ theme }) => theme.motion.easeOut} both;
 `;
 
-/** Checkout link with the brand orange, so the purchase stands apart from "Verificar Acesso". */
+const Row = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+`;
+
+/** Checkout link with the brand orange, so the purchase stands apart from the main action. */
 const BuyLink = styled.a`
   display: inline-flex;
   width: 100%;
@@ -146,6 +178,11 @@ const Note = styled.p`
   color: ${({ theme }) => theme.colors.textTertiary};
 `;
 
+/** Lets password managers pair the password with the account e-mail. */
+const HiddenUsername = styled.input`
+  ${visuallyHidden}
+`;
+
 const ConfettiCanvas = styled.canvas`
   position: fixed;
   inset: 0;
@@ -159,20 +196,38 @@ const LiveRegion = styled.span`
   ${visuallyHidden}
 `;
 
+const COPY: Record<Step, { title: string; announce: string }> = {
+  email: { title: 'Ative seu Acesso ao Prato Rápido', announce: '' },
+  setup: { title: 'Defina sua senha de acesso', announce: 'Primeiro acesso: defina sua senha.' },
+  login: { title: 'Digite sua senha', announce: 'Digite sua senha para entrar.' },
+  success: { title: 'Acesso liberado!', announce: 'Acesso liberado. Abrindo o app.' },
+};
+
 /**
- * "Ative seu Acesso ao Prato Rápido": the buyer types the Cakto purchase
- * e-mail; the server checks the buyer list (Upstash) and returns a signed
- * access token. Shown by AccessGate instead of the app while locked.
+ * Sign-in for buyers. Step 1: the Cakto purchase e-mail (the server checks the
+ * purchase). Step 2: on the first access the buyer creates a password; later
+ * the password is required. The server answers with an HttpOnly session cookie.
+ * Shown by AccessGate instead of the app while locked.
  */
 export function PaywallScreen() {
   const { grantAccess, checkoutUrl, priceLabel, lockMessage, statusError, retryStatus } = useAccess();
   const { notify } = useToast();
   const { play, haptic } = useSound();
   const formHintId = useId();
+  const [step, setStep] = useState<Step>('email');
+  const [busy, setBusy] = useState(false);
   const [email, setEmail] = useState('');
-  const [fieldError, setFieldError] = useState<string | null>(null);
-  const [stage, setStage] = useState<Stage>('idle');
+  /** The checked purchase e-mail, used by the password steps. */
+  const [account, setAccount] = useState('');
+  const [notFound, setNotFound] = useState(false);
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [password, setPassword] = useState('');
+  const [confirmation, setConfirmation] = useState('');
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [confirmationError, setConfirmationError] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const passwordRef = useRef<HTMLInputElement>(null);
   const timerRef = useRef<number | undefined>(undefined);
   const stopConfettiRef = useRef<(() => void) | null>(null);
 
@@ -184,6 +239,17 @@ export function PaywallScreen() {
     [],
   );
 
+  // Each password step starts in its password field.
+  useEffect(() => {
+    if (step === 'setup' || step === 'login') passwordRef.current?.focus();
+  }, [step]);
+
+  const fail = (title: string, description: string) => {
+    play('error');
+    haptic('error');
+    notify({ id: 'paywall', tone: 'error', placement: 'top', title, description });
+  };
+
   const celebrate = () => {
     const canvas = canvasRef.current;
     if (!canvas || prefersReducedMotion()) return;
@@ -193,79 +259,187 @@ export function PaywallScreen() {
     });
   };
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (stage === 'checking' || stage === 'success') return;
+  const resetPasswords = () => {
+    setPassword('');
+    setConfirmation('');
+    setPasswordError(null);
+    setConfirmationError(null);
+  };
 
+  const goToPasswordStep = (next: 'setup' | 'login') => {
+    resetPasswords();
+    setStep(next);
+  };
+
+  const backToEmail = (purchaseMissing = false) => {
+    resetPasswords();
+    setShowPassword(false);
+    setNotFound(purchaseMissing);
+    setStep('email');
+  };
+
+  const succeed = (session: SessionResponse) => {
+    setStep('success');
+    play('celebrate');
+    haptic('celebrate');
+    celebrate();
+    timerRef.current = window.setTimeout(() => grantAccess({ v: 2, email: session.email, expiresAt: session.expiresAt }), SUCCESS_MS);
+  };
+
+  const handleNoPurchase = () => {
+    backToEmail(true);
+    fail('E-mail não encontrado', 'Confira o e-mail usado na Cakto ou garanta seu acesso.');
+  };
+
+  const submitEmail = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (busy) return;
     const normalized = normalizeEmail(email);
     if (!isValidEmail(normalized)) {
-      setFieldError('Digite um e-mail válido, como nome@email.com.');
+      setEmailError('Digite um e-mail válido, como nome@email.com.');
       event.currentTarget.querySelector('input')?.focus();
       return;
     }
 
-    setFieldError(null);
-    setStage('checking');
+    setEmailError(null);
+    setNotFound(false);
+    setBusy(true);
     try {
-      const result = await accessService.verifyEmail({ email: normalized });
-      if (result.success === true && typeof result.accessToken === 'string') {
-        setStage('success');
-        play('celebrate');
-        haptic('celebrate');
-        celebrate();
-        const grant = { email: normalized, token: result.accessToken, expiresAt: result.expiresAt };
-        timerRef.current = window.setTimeout(() => grantAccess(grant), SUCCESS_MS);
-        return;
-      }
-      setStage('not-found');
-      play('error');
-      haptic('error');
-      notify({
-        id: 'paywall',
-        tone: 'error',
-        placement: 'top',
-        title: 'E-mail não encontrado',
-        description: 'Confira o e-mail usado na Cakto ou garanta seu acesso.',
-      });
+      const { isFirstAccess } = await accessService.verifyEmail({ email: normalized });
+      setAccount(normalized);
+      play('tap');
+      goToPasswordStep(isFirstAccess ? 'setup' : 'login');
     } catch (error) {
-      setStage('idle');
-      play('error');
-      notify({
-        id: 'paywall',
-        tone: 'error',
-        placement: 'top',
-        title: 'Não deu para verificar agora',
-        description: getErrorMessage(error),
-      });
+      if (error instanceof ApiClientError && error.code === 'NO_PURCHASE') handleNoPurchase();
+      else fail('Não deu para verificar agora', getErrorMessage(error));
+    } finally {
+      setBusy(false);
     }
   };
 
-  const isSuccess = stage === 'success';
+  const submitSetup = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (busy) return;
+    if (password.length < PASSWORD_MIN_CHARS) {
+      setPasswordError(`Use pelo menos ${PASSWORD_MIN_CHARS} caracteres.`);
+      passwordRef.current?.focus();
+      return;
+    }
+    if (password !== confirmation) {
+      setConfirmationError('As senhas não são iguais.');
+      return;
+    }
+
+    setBusy(true);
+    try {
+      succeed(await accessService.setupPassword({ email: account, password }));
+    } catch (error) {
+      if (error instanceof ApiClientError && (error.code === 'WEAK_PASSWORD' || error.code === 'BAD_REQUEST')) {
+        setPasswordError(error.message);
+        play('error');
+        passwordRef.current?.focus();
+      } else if (error instanceof ApiClientError && error.code === 'PASSWORD_ALREADY_SET') {
+        goToPasswordStep('login');
+        notify({ id: 'paywall', placement: 'top', icon: Lock, title: 'Este e-mail já tem senha', description: 'Entre com a senha cadastrada.' });
+      } else if (error instanceof ApiClientError && error.code === 'NO_PURCHASE') {
+        handleNoPurchase();
+      } else {
+        fail('Não deu para salvar a senha', getErrorMessage(error));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitLogin = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (busy) return;
+    if (!password) {
+      setPasswordError('Digite a sua senha.');
+      passwordRef.current?.focus();
+      return;
+    }
+
+    setBusy(true);
+    try {
+      succeed(await accessService.login({ email: account, password }));
+    } catch (error) {
+      if (error instanceof ApiClientError && error.code === 'INVALID_PASSWORD') {
+        setPasswordError(error.message);
+        fail('Senha incorreta', 'Confira a senha e tente de novo.');
+        passwordRef.current?.select();
+      } else if (error instanceof ApiClientError && error.code === 'RATE_LIMITED') {
+        setPasswordError(error.message);
+        fail('Acesso pausado por alguns minutos', error.message);
+      } else if (error instanceof ApiClientError && error.code === 'PASSWORD_NOT_SET') {
+        goToPasswordStep('setup');
+      } else if (error instanceof ApiClientError && error.code === 'NO_PURCHASE') {
+        handleNoPurchase();
+      } else {
+        fail('Não deu para entrar agora', getErrorMessage(error));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const isSuccess = step === 'success';
+  const isPasswordStep = step === 'setup' || step === 'login';
   const buyLabel = `Comprar Acesso (${priceLabel})`;
+  const passwordType = showPassword ? 'text' : 'password';
+  const MedalIcon = isSuccess ? Check : step === 'setup' ? LockKeyhole : step === 'login' ? Lock : KeyRound;
+
+  const passwordTools = (
+    <Row>
+      <Button type="button" size="sm" variant="ghost" leftIcon={<ArrowLeft size={16} />} onClick={() => backToEmail()} disabled={busy}>
+        Trocar e-mail
+      </Button>
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        aria-pressed={showPassword}
+        leftIcon={showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+        onClick={() => setShowPassword((current) => !current)}
+      >
+        {showPassword ? 'Esconder senha' : 'Mostrar senha'}
+      </Button>
+    </Row>
+  );
 
   return (
     <Screen>
       <BrandLogo />
       <Card aria-labelledby="paywall-title">
         <Medal $success={isSuccess} aria-hidden="true">
-          {isSuccess ? <Check size={34} strokeWidth={3} /> : <KeyRound size={30} />}
+          <MedalIcon size={isSuccess ? 34 : 30} strokeWidth={isSuccess ? 3 : 2} />
         </Medal>
-        <Title id="paywall-title">{isSuccess ? 'Acesso liberado!' : 'Ative seu Acesso ao Prato Rápido'}</Title>
+        <Title id="paywall-title">{COPY[step].title}</Title>
         <Subtitle>
-          {isSuccess
-            ? 'Tudo certo com a sua compra. Abrindo o Prato Rápido…'
-            : 'Digite o e-mail utilizado na compra na Cakto para liberar o app neste aparelho.'}
+          {step === 'email' && 'Digite o e-mail utilizado na compra na Cakto para liberar o app neste aparelho.'}
+          {step === 'setup' && (
+            <>
+              Primeiro acesso de <strong>{account}</strong>. Crie uma senha: ela será pedida sempre que você entrar em um
+              aparelho.
+            </>
+          )}
+          {step === 'login' && (
+            <>
+              Entrando como <strong>{account}</strong>.
+            </>
+          )}
+          {isSuccess && 'Tudo certo com a sua compra. Abrindo o Prato Rápido…'}
         </Subtitle>
 
-        {!isSuccess && lockMessage && (
+        {step === 'email' && lockMessage && (
           <Block>
-            <InlineAlert tone="warning" title="Ative o acesso de novo">
+            <InlineAlert tone="warning" title="Entre de novo">
               {lockMessage}
             </InlineAlert>
           </Block>
         )}
 
-        {!isSuccess && statusError && (
+        {step === 'email' && statusError && (
           <Block>
             <InlineAlert
               tone="warning"
@@ -280,8 +454,8 @@ export function PaywallScreen() {
           </Block>
         )}
 
-        {!isSuccess && (
-          <Form onSubmit={handleSubmit} noValidate aria-describedby={formHintId}>
+        {step === 'email' && (
+          <Form onSubmit={submitEmail} noValidate aria-describedby={formHintId}>
             <Input
               label="E-mail da compra"
               icon={Mail}
@@ -296,18 +470,89 @@ export function PaywallScreen() {
               value={email}
               onChange={(event) => {
                 setEmail(event.target.value);
-                if (fieldError) setFieldError(null);
-                if (stage === 'not-found') setStage('idle');
+                if (emailError) setEmailError(null);
+                if (notFound) setNotFound(false);
               }}
-              error={fieldError ?? undefined}
+              error={emailError ?? undefined}
             />
-            <Button type="submit" size="lg" fullWidth isLoading={stage === 'checking'} leftIcon={<ShieldCheck size={20} />}>
+            <Button type="submit" size="lg" fullWidth isLoading={busy} leftIcon={<ShieldCheck size={20} />}>
               Verificar Acesso
             </Button>
           </Form>
         )}
 
-        {stage === 'not-found' && (
+        {step === 'setup' && (
+          <Form key="setup" onSubmit={submitSetup} noValidate>
+            <HiddenUsername type="email" name="username" autoComplete="username" value={account} readOnly tabIndex={-1} aria-hidden="true" />
+            <Input
+              ref={passwordRef}
+              label="Senha"
+              icon={LockKeyhole}
+              name="new-password"
+              type={passwordType}
+              autoComplete="new-password"
+              autoCapitalize="off"
+              spellCheck={false}
+              maxLength={PASSWORD_MAX_CHARS}
+              value={password}
+              onChange={(event) => {
+                setPassword(event.target.value);
+                if (passwordError) setPasswordError(null);
+              }}
+              hint={`Mínimo de ${PASSWORD_MIN_CHARS} caracteres. Evite datas e sequências como 12345678.`}
+              error={passwordError ?? undefined}
+            />
+            <Input
+              label="Confirmar senha"
+              icon={LockKeyhole}
+              name="confirm-password"
+              type={passwordType}
+              autoComplete="new-password"
+              autoCapitalize="off"
+              spellCheck={false}
+              maxLength={PASSWORD_MAX_CHARS}
+              value={confirmation}
+              onChange={(event) => {
+                setConfirmation(event.target.value);
+                if (confirmationError) setConfirmationError(null);
+              }}
+              error={confirmationError ?? undefined}
+            />
+            {passwordTools}
+            <Button type="submit" size="lg" fullWidth isLoading={busy} leftIcon={<ShieldCheck size={20} />}>
+              Salvar e entrar
+            </Button>
+          </Form>
+        )}
+
+        {step === 'login' && (
+          <Form key="login" onSubmit={submitLogin} noValidate>
+            <HiddenUsername type="email" name="username" autoComplete="username" value={account} readOnly tabIndex={-1} aria-hidden="true" />
+            <Input
+              ref={passwordRef}
+              label="Senha"
+              icon={Lock}
+              name="current-password"
+              type={passwordType}
+              autoComplete="current-password"
+              autoCapitalize="off"
+              spellCheck={false}
+              maxLength={PASSWORD_MAX_CHARS}
+              value={password}
+              onChange={(event) => {
+                setPassword(event.target.value);
+                if (passwordError) setPasswordError(null);
+              }}
+              error={passwordError ?? undefined}
+            />
+            {passwordTools}
+            <Button type="submit" size="lg" fullWidth isLoading={busy} leftIcon={<LogIn size={20} />}>
+              Entrar
+            </Button>
+          </Form>
+        )}
+
+        {step === 'email' && notFound && (
           <Block>
             <InlineAlert tone="error" title="E-mail não encontrado na base de compradores.">
               Use o mesmo e-mail da compra. Pix e cartão liberam em poucos minutos; boleto pode levar até 3 dias úteis.
@@ -321,7 +566,7 @@ export function PaywallScreen() {
           </Block>
         )}
 
-        {!isSuccess && stage !== 'not-found' && checkoutUrl && (
+        {step === 'email' && !notFound && checkoutUrl && (
           <BuyHint>
             Ainda não tem acesso?{' '}
             <a href={checkoutUrl} target="_blank" rel="noopener noreferrer">
@@ -330,11 +575,17 @@ export function PaywallScreen() {
           </BuyHint>
         )}
 
-        <Note id={formHintId}>
-          O e-mail serve só para conferir a compra e fica salvo neste aparelho para manter o acesso.
-        </Note>
+        {!isSuccess && (
+          <Note id={formHintId}>
+            {isPasswordStep
+              ? step === 'login'
+                ? 'Esqueceu a senha? Fale com o suporte da sua compra para liberar uma nova.'
+                : 'Guarde a senha: sem envio de e-mail, só o suporte consegue liberar uma nova.'
+              : 'O e-mail confere a sua compra e a senha protege o seu acesso, neste e em outros aparelhos.'}
+          </Note>
+        )}
       </Card>
-      <LiveRegion role="status">{isSuccess ? 'Acesso liberado. Abrindo o app.' : ''}</LiveRegion>
+      <LiveRegion role="status">{COPY[step].announce}</LiveRegion>
       <ConfettiCanvas ref={canvasRef} aria-hidden="true" />
     </Screen>
   );

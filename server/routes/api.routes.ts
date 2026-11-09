@@ -1,7 +1,14 @@
 import { Router } from 'express';
 import { env } from '../config/env.ts';
 import { SERVER_LIMITS } from '../config/limits.ts';
-import { accessStatusHandler, verifyEmailHandler } from '../controllers/access.controller.ts';
+import {
+  accessStatusHandler,
+  loginHandler,
+  logoutHandler,
+  sessionHandler,
+  setupPasswordHandler,
+  verifyEmailHandler,
+} from '../controllers/access.controller.ts';
 import { challengeHandler, verifyChallengeHandler } from '../controllers/challenge.controller.ts';
 import { recipeImageHandler } from '../controllers/image.controller.ts';
 import { generateRecipeHandler, healthHandler, transcribeAudioHandler } from '../controllers/recipe.controller.ts';
@@ -11,8 +18,8 @@ import { jsonBody, requireAccess, requireHuman } from '../middleware/requestGuar
 import { createWebhookRouter } from './webhook.routes.ts';
 
 /*
- * Guard order for the AI routes, cheapest first: per-IP limit → buyer access
- * token (paywall) → human token (header only) → per-token limit → Content-Type
+ * Guard order for the AI routes, cheapest first: per-IP limit → buyer session
+ * cookie (paywall) → human token (header only) → per-token limit → Content-Type
  * → size-limited JSON parse → strict validation in the controller. Oversized,
  * unpaid or unauthenticated bodies are rejected before they are read.
  */
@@ -38,6 +45,11 @@ export function createApiRouter(): Router {
     ...jsonBody(bodyLimits.verifyEmail),
     verifyEmailHandler,
   );
+  // First-access password + HttpOnly session cookie (see access.controller.ts).
+  router.post('/auth/setup-password', ipLimit('auth-setup', SERVER_LIMITS.authPerMinute), ...jsonBody(bodyLimits.auth), setupPasswordHandler);
+  router.post('/auth/login', ipLimit('auth-login', SERVER_LIMITS.authPerMinute), ...jsonBody(bodyLimits.auth), loginHandler);
+  router.get('/auth/session', ipLimit('auth-session', 60), sessionHandler);
+  router.post('/auth/logout', ipLimit('auth-logout', 30), logoutHandler);
   router.use('/webhook', createWebhookRouter());
 
   router.get('/challenge', ipLimit('challenge', SERVER_LIMITS.challengeRequestsPerMinute), challengeHandler);

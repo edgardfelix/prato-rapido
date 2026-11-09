@@ -44,7 +44,7 @@ export const originGuard: RequestHandler = (req, res, next) => {
   res.setHeader('Vary', 'Origin');
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Human-Token, X-Access-Token');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Human-Token');
     res.setHeader('Access-Control-Max-Age', '600');
     res.sendStatus(204);
     return;

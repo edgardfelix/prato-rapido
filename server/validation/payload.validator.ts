@@ -1,4 +1,4 @@
-import type { VerifyEmailPayload } from '../../src/@types/access.ts';
+import type { CredentialsPayload, VerifyEmailPayload } from '../../src/@types/access.ts';
 import type { AIProfileContext, APIPayload, TranscribeAudioPayload } from '../../src/@types/api.ts';
 import type { HumanChallengeAnswer } from '../../src/@types/challenge.ts';
 import type { MediaAttachment } from '../../src/@types/media.ts';
@@ -19,6 +19,7 @@ import {
 import { badRequest, HttpError } from '../utils/httpError.ts';
 import { assertKnownKeys, isRecord, readList, readObject, readUserText } from './common.ts';
 import { parseEmail } from './email.ts';
+import { newPasswordProblem } from './password.ts';
 
 /*
  * Request validation is strict: every object has a closed set of fields,
@@ -225,6 +226,27 @@ export function validateVerifyEmailPayload(body: unknown): VerifyEmailPayload {
   const email = parseEmail(payload.email);
   if (!email) throw badRequest('Digite um e-mail válido, como nome@email.com.');
   return { email };
+}
+
+/**
+ * Validates `{ email, password }`. A new password (first access) must also
+ * pass the password policy; at login only its size is checked, so the answer
+ * never hints at the policy.
+ */
+export function validateCredentialsPayload(body: unknown, kind: 'new-password' | 'login'): CredentialsPayload {
+  const payload = readObject(body, 'Envie o e-mail e a senha em formato JSON.');
+  assertKnownKeys(payload, ['email', 'password'], 'acesso');
+  const email = parseEmail(payload.email);
+  if (!email) throw badRequest('Digite um e-mail válido, como nome@email.com.');
+
+  const { password } = payload;
+  if (typeof password !== 'string' || password.length === 0) throw badRequest('Digite a sua senha.');
+  if (password.length > SERVER_LIMITS.passwordMaxChars) throw badRequest('Senha longa demais.');
+  if (kind === 'new-password') {
+    const problem = newPasswordProblem(password, email);
+    if (problem) throw new HttpError(400, 'WEAK_PASSWORD', problem);
+  }
+  return { email, password };
 }
 
 /** Validates the body of `POST /api/challenge/verify`. */

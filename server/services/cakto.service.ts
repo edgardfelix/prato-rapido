@@ -3,7 +3,8 @@ import { env } from '../config/env.ts';
 import { SERVER_LIMITS } from '../config/limits.ts';
 import { safeEqual } from '../utils/signing.ts';
 import { maskEmail, parseEmail } from '../validation/email.ts';
-import { addAuthorizedEmail, forgetCachedAccess, removeAuthorizedEmail } from './buyers.service.ts';
+import { addAuthorizedEmail, removeAuthorizedEmail } from './buyers.service.ts';
+import { forgetCachedAccess } from './session.service.ts';
 
 /*
  * Cakto webhooks (https://docs.cakto.com.br/conceitos/webhooks). The body is

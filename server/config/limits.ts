@@ -10,6 +10,8 @@ export const SERVER_LIMITS = Object.freeze({
     transcribe: '4.5mb',
     challenge: '2kb',
     verifyEmail: '2kb',
+    /** E-mail + password (setup and login). */
+    auth: '2kb',
     /** Cakto payloads are a few KB; Webhook V2 may batch several orders. */
     webhook: '256kb',
   }),
@@ -51,4 +53,15 @@ export const SERVER_LIMITS = Object.freeze({
   accessNegativeCacheMs: 60_000,
   accessCacheMaxEntries: 5_000,
   upstashTimeoutMs: 5_000,
+
+  /* First-access password (no e-mail sending) and the HttpOnly session cookie. */
+  passwordMinChars: 8,
+  passwordMaxChars: 128,
+  /** Password setups + logins per IP per minute. */
+  authPerMinute: 10,
+  /** Wrong passwords per e-mail before a temporary lock, and how long the lock lasts. */
+  loginMaxFailures: 5,
+  loginLockSeconds: 15 * 60,
+  /** GET /api/auth/session extends sessions closer than this to their expiry. */
+  sessionRenewBeforeMs: 15 * 24 * 60 * 60_000,
 });

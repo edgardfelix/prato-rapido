@@ -2,7 +2,7 @@ import { createHmac } from 'node:crypto';
 import { env } from '../config/env.ts';
 import { SERVER_LIMITS } from '../config/limits.ts';
 import { parseEmail } from '../validation/email.ts';
-import { upstashCommand, UpstashError } from './upstash.service.ts';
+import { upstashCommand } from './upstash.service.ts';
 
 /*
  * Who may activate the app, in Upstash Redis (no SQL, no Supabase). Two sources:
@@ -127,48 +127,4 @@ export async function findAccessSource(email: string): Promise<AccessSource | nu
 
 export async function isEmailAuthorized(email: string): Promise<boolean> {
   return (await findAccessSource(email)) !== null;
-}
-
-/* Revocation check for the AI routes, cached so a recipe does not cost a Redis round trip each time. */
-
-const accessCache = new Map<string, { authorized: boolean; until: number }>();
-let lastOutageLog = 0;
-
-/**
- * Cached `isEmailAuthorized`. During an Upstash outage it trusts the signed
- * access token (paying users keep cooking) and logs at most once a minute.
- */
-export async function isEmailStillAuthorized(email: string, now = Date.now()): Promise<boolean> {
-  const cached = accessCache.get(email);
-  if (cached && cached.until > now) return cached.authorized;
-
-  try {
-    const authorized = await isEmailAuthorized(email);
-    accessCache.delete(email);
-    accessCache.set(email, {
-      authorized,
-      until: now + (authorized ? SERVER_LIMITS.accessCacheMs : SERVER_LIMITS.accessNegativeCacheMs),
-    });
-    if (accessCache.size > SERVER_LIMITS.accessCacheMaxEntries) {
-      const oldest = accessCache.keys().next().value;
-      if (oldest !== undefined) accessCache.delete(oldest);
-    }
-    return authorized;
-  } catch (error) {
-    if (!(error instanceof UpstashError)) throw error;
-    if (now - lastOutageLog > 60_000) {
-      lastOutageLog = now;
-      console.warn(`[paywall] Revocation check skipped (${error.message}); trusting signed access tokens meanwhile.`);
-    }
-    return true;
-  }
-}
-
-/**
- * Drops the cached answer, so a refund handled by this process takes effect
- * immediately. A refund handled by the landing page reaches the AI routes when
- * the cached answer expires (SERVER_LIMITS.accessCacheMs).
- */
-export function forgetCachedAccess(email: string): void {
-  accessCache.delete(email);
 }
